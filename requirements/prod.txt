@@ -1,7 +1,7 @@
 # Production deployment.  pip install -r requirements/prod.txt
 -r base.txt
 
-gunicorn>=22.0
+gunicorn>=26.2.0
 
 # Uncomment when JWT_BLACKLIST_BACKEND=redis or chained.
 # redis>=5.0

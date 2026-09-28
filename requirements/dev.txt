@@ -1,8 +1,8 @@
 # Local development and CI.  pip install -r requirements/dev.txt
 -r base.txt
 
-coverage>=7.4
-ruff>=0.5
+coverage>=7.16.1
+ruff>=0.16.9
 
 # Dependency vulnerability scanning; see the `audit` job in CI.
-pip-audit>=2.7
+pip-audit>=2.10.1
