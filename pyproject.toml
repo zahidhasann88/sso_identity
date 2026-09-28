@@ -1,0 +1,52 @@
+# Tooling configuration only. The service is run via manage.py / gunicorn and
+# is deliberately not packaged as a distributable library.
+
+[project]
+name = "sso-identity"
+version = "1.0.0"
+description = "Centralized OAuth2/JWT single-sign-on identity provider"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["identity/migrations"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "S",    # flake8-bandit
+    "DJ",   # flake8-django
+    "C4",   # flake8-comprehensions
+]
+ignore = [
+    "S101",  # assert is used deliberately in tests
+    # These fire on the `token_type` parameter ("access"/"refresh"/"session").
+    # Token *kinds*, never secrets; the heuristic matches on "token" alone.
+    "S105",  # hardcoded-password-string
+    "S106",  # hardcoded-password-func-arg
+    "S107",  # hardcoded-password-default
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Settings legitimately re-exports names and reads the environment at import.
+"config/settings.py" = ["F403", "F405"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["config", "identity"]
+
+[tool.coverage.run]
+source = ["config", "identity"]
+omit = ["*/migrations/*", "*/tests/*"]
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

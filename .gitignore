@@ -1,0 +1,42 @@
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtualenvs -----------------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+keys/*.pem
+!keys/.gitkeep
+
+# --- Databases (PostgreSQL is the supported engine; no local DB files) -----
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+
+# --- Test / coverage -------------------------------------------------------
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# --- Local notes / scratch -------------------------------------------------
+docs.txt
+
+# --- Editors / OS ----------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

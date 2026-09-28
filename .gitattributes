@@ -1,0 +1,13 @@
+# Normalise line endings: `core.autocrlf` is per-clone and cannot be relied on.
+* text=auto eol=lf
+
+# Tools that treat a trailing CR as part of the token: make reads it into a
+# recipe, and a CRLF shebang breaks exec.
+Makefile        text eol=lf
+Dockerfile      text eol=lf
+*.sh            text eol=lf
+*.pem           text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

@@ -1,0 +1,16 @@
+# Runtime dependencies. Install with:  pip install -r requirements/base.txt
+# Django 6.0 requires Python >= 3.12, which sets the project's Python floor.
+Django>=6.0,<7.0
+djangorestframework>=3.15
+PyJWT>=2.8
+cryptography>=42.0
+
+# Configuration: settings are env-driven and loaded from .env when present.
+python-dotenv>=1.0
+
+# PostgreSQL is the supported database engine.
+psycopg[binary]>=3.1
+
+# Argon2id password hashing. Optional in the strict sense — the service falls
+# back to PBKDF2 without it — but required for the documented security posture.
+argon2-cffi>=23.1

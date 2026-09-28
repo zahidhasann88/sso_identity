@@ -1,0 +1,6 @@
+# Kept for convenience and backwards compatibility; the canonical, split
+# requirement sets live in requirements/.
+#
+#   pip install -r requirements/dev.txt    # local development
+#   pip install -r requirements/prod.txt   # production
+-r requirements/base.txt

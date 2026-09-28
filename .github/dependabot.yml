@@ -1,0 +1,27 @@
+# For an identity provider a stale cryptography or PyJWT is a security problem,
+# not housekeeping, so requirements and workflow actions are both tracked.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: "/requirements"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine bumps; anything security-relevant is split out by
+      # Dependabot's own security-update flow regardless of this grouping.
+      python-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
