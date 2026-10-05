@@ -2,11 +2,11 @@
 # Django 6.0 requires Python >= 3.12, which sets the project's Python floor.
 Django>=6.1.1,<7.0
 djangorestframework>=3.18.1
-PyJWT>=2.15.0
-cryptography>=50.0.1
+PyJWT>=2.15.1
+cryptography>=50.0.2
 
 # Configuration: settings are env-driven and loaded from .env when present.
-python-dotenv>=1.2.3
+python-dotenv>=1.2.4
 
 # PostgreSQL is the supported database engine.
 psycopg[binary]>=3.3.6
