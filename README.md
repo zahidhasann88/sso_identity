@@ -1,182 +1,127 @@
 # SSO Identity
 
-Centralized single-sign-on identity provider for a microservice estate, on
-Django 6 + DRF. It issues RS256-signed JWTs that relying parties verify
-**offline** from a published JWKS, and backs them with a revocation ledger so
-logout, password change and deactivation actually invalidate outstanding tokens.
+A login service (single sign-on) built with Django. Users log in once and get a
+token; your other apps check that token themselves, without calling this service.
 
-## Architecture
+**What it does**
+
+- Register, log in, log out, change password
+- Issues signed JWT tokens (access token: 15 min, refresh token: 7 days)
+- Logout and password change really cancel old tokens
+- Protects against common attacks (brute-force login, stolen/reused tokens, forged tokens)
+
+**Highlights**
+
+- **Stolen refresh tokens are caught.** Each refresh token works only once; if a
+  used one shows up again, the whole session is shut down.
+- **Signing keys can be rotated with no downtime.** The old key keeps verifying
+  existing tokens while the new key signs fresh ones.
+- **Race conditions are tested.** Tests fire simultaneous requests (e.g. two
+  refreshes of the same token) to prove only one succeeds.
+- **Attack simulation script.** `scripts/security_demo.py` runs real attacks
+  against the service and checks that every one is blocked.
+
+## How it works
 
 ```
-  client ──────▶┌─ sso-identity ─────────────┐──────▶ PostgreSQL
-  login/refresh │  holds the private key,    │        users + revocation ledger
-                │  issues & revokes tokens   │
-                └─────────── publishes ──────┘
-                    /.well-known/jwks.json
-                             │
-  relying party ─────────────┘  verifies locally, never calls back
+  user ──login──▶ SSO Identity ──▶ PostgreSQL
+                       │
+                       └─ publishes public key at /.well-known/jwks.json
+                                    │
+  your other apps ◀─────────────────┘  verify tokens with that key
 ```
 
-Only this service holds the signing key. Relying parties fetch the public JWK
-once and validate locally, so authentication costs them no round-trip. The
-trade-off is a bounded revocation staleness window of one access-token lifetime,
-with `/api/auth/introspect/` as the escape hatch when a caller needs certainty.
+Only this service can create tokens. Other apps download the public key once
+and use it to check tokens locally.
 
-## Token Model
+## Getting started
 
-Access tokens live 15 minutes and carry identity, `role`, a role-derived `scope`
-and caller-supplied `meta`. Refresh tokens live 7 days, are deliberately
-claim-poor (`sub`, `jti`, `sid`, `tv`, `typ`, `role`) so a leaked one discloses
-nothing about the user, and are accepted only at `/refresh/` and `/logout/`.
-Principals have UUID primary keys, so `sub` exposes no enumerable sequence.
-
-Three identifiers in every token give three revocation granularities:
-
-| Claim | Scope | Revoking it kills |
-| ----- | ----- | ----------------- |
-| `jti` | one token | that single token |
-| `sid` | one login session | every token in that session (access + refresh) |
-| `tv`  | the whole user | every token ever issued to that user |
-
-`tv` is a per-user counter stamped into every token, which makes global sign-out
-**O(1)**: bump it and every outstanding token for that principal is stale, with
-nothing to enumerate and nothing to write per session.
-
-## Revocation
-
-`JWT_BLACKLIST_BACKEND` selects the store; all three implement one interface.
-
-| Backend | Behaviour |
-| ------- | --------- |
-| `db` (default) | `jti` *is* the primary key, so a check is one indexed point lookup and double-revocation is idempotent by construction |
-| `redis` | Entries carry the token's remaining TTL, so they expire exactly when the token would have |
-| `chained` | Redis read-through over the table: an outage costs latency, not security |
-
-Rows are prunable once `exp` alone rejects the token
-(`manage.py purge_blacklist`), and `manage.py revoke_user_tokens` revokes a
-principal out-of-band for incident response.
-
-### Rotation and replay detection
-
-Rotation is on by default: each refresh consumes the presented token and issues a
-replacement bound to the same `sid`. Consuming it is a single atomic insert of the
-`jti` — the ledger's primary key — so of N simultaneous callers holding the same
-refresh token, exactly one can rotate it. Whoever loses that race is replaying a
-consumed token, which is indistinguishable from theft and handled as such: the
-whole session is revoked.
-
-## Key Rotation
-
-The signing key and the verification keys are configured separately, which makes
-rotation a zero-downtime operation — the retired public key keeps verifying while
-only the new key signs.
-
-```bash
-cp keys/jwt_public.pem keys/jwt_public.previous.pem      # keep the outgoing key
-python manage.py generate_jwt_keys --force --size 4096   # new signing key
-# JWT_ADDITIONAL_PUBLIC_KEY_PATHS=keys/jwt_public.previous.pem
-# restart, wait one ACCESS_TOKEN_MINUTES, then unset it again
-```
-
-During the window the JWKS serves both keys, active first, and each token is
-verified only against the key its `kid` names — a `kid` being an RFC 7638
-thumbprint of the key material, so every replica derives the same one without
-coordination. `GET /api/auth/keys/` reports the drain window in `retired_kids`.
-Omit the overlap and rotation becomes an immediate global sign-out, which is the
-right move if the old key is believed compromised.
-
-## Security
-
-| Concern | Control |
-| ------- | ------- |
-| `alg: none`, RS256→HS256 confusion | Asymmetric-only allow-list (`RS256`/`RS384`/`RS512`/`PS256`), enforced on the header *before* signature verification; 2048-bit minimum key size |
-| Forged or misrouted tokens | RSA signature plus mandatory `iss`, `aud` and `typ`, checked per token class |
-| Stolen refresh token | Single-use rotation; a replay revokes the whole session |
-| Stolen access token after logout | `sid` revocation checked on every request, `tv` for the whole principal |
-| Credential stuffing | Per-endpoint throttles plus a failure-count lockout |
-| Throttle evasion via `X-Forwarded-For` | Counters key off the socket address unless a proxy is explicitly trusted, and then off the hop that proxy appended |
-| User enumeration | Identical 401 envelope plus a constant-work dummy hash |
-| Password cracking | Argon2id (PBKDF2 fallback) and Django's validator chain, 12-character minimum |
-| Token leakage via caches | `Cache-Control: no-store` on every `/api/auth/*` response |
-
-Security events go to the `identity.security` logger; `refresh.reuse_detected`
-and `login.locked` are the two worth alerting on.
-
-## API
-
-| Method | Path | Auth | Purpose |
-| ------ | ---- | ---- | ------- |
-| `POST` | `/api/auth/register/` | none (ADMIN for elevated roles) | Create an account |
-| `POST` | `/api/auth/login/` | none | Credentials → access + refresh |
-| `POST` | `/api/auth/refresh/` | refresh token | New access token + rotated refresh |
-| `POST` | `/api/auth/logout/` | refresh token (access token optional) | Revoke one token or all sessions |
-| `POST` | `/api/auth/introspect/` | Bearer (own token, or ADMIN for any) | RFC 7662-style token status |
-| `POST` | `/api/auth/password/change/` | Bearer | Rotate password, kill all sessions |
-| `GET`  | `/api/auth/me/` | Bearer | The authenticated principal |
-| `GET`  | `/api/auth/keys/` | none | Structured public-key document |
-| `GET`  | `/.well-known/jwks.json` | none | RFC 7517 JWK Set |
-| `GET`  | `/.well-known/openid-configuration` | none | Discovery document (OAuth2-shaped; no `id_token` flow) |
-| `GET`  | `/api/health/` | none | Liveness/readiness probe |
-
-Every error shares one envelope — `code`, `detail`, `status` and a `request_id`
-matching the `X-Request-ID` response header.
-
-## Quick Start
+You need **Python 3.12+** and **PostgreSQL** (or Docker to run Postgres for you).
 
 ```bash
 pip install -r requirements/dev.txt
-cp .env.example .env                        # set DB_PASSWORD and DJANGO_SECRET_KEY
-docker compose up -d db                     # or point DB_* at your own Postgres
-python manage.py generate_jwt_keys --size 4096
-python manage.py migrate
+cp .env.example .env              # then set DB_PASSWORD and DJANGO_SECRET_KEY in it
+docker compose up -d db           # starts Postgres (skip if you have your own)
+python manage.py migrate           # also creates signing keys in keys/ on first run
 python manage.py runserver
 ```
 
-Configuration is environment-driven: `.env` is loaded at startup, real
-environment variables take precedence, and `.env.example` documents every
-variable. `DEBUG=1` generates a development keypair on first boot if none exists;
-`DEBUG=0` makes a missing signing key, secret key or `ALLOWED_HOSTS` a hard
-startup error.
-
-## Production
-
-`python manage.py check --deploy` reports every item below.
-
-- **Point `CACHE_URL` at Redis.** Throttle and login-lockout counters live in the
-  cache, and the local-memory default is per-process — N gunicorn workers
-  multiply every limit by N (`identity.W001`).
-- **Only trust proxy headers behind a proxy that overwrites them**
-  (`TRUST_PROXY_HEADERS`, off by default), or a client can fake HTTPS and pick a
-  fresh rate-limit bucket per request. It is required when TLS terminates at a
-  proxy, otherwise `SECURE_SSL_REDIRECT` loops (`identity.W003`).
-- **Prefer durable revocation.** `JWT_BLACKLIST_BACKEND=redis` un-revokes every
-  unexpired token on a flush or failover; `chained` keeps the database as the
-  record of truth (`identity.W002`).
-- **Leave rotation consuming tokens.** `JWT_BLACKLIST_AFTER_ROTATION=0` never
-  consumes the old refresh token, which removes replay detection entirely
-  (`identity.W004`).
-
-The container image runs as a non-root user and holds no key material.
-`/api/health/` serves liveness and readiness, reporting `503` when the database
-or the signing key is unavailable.
-
-## Testing
+To make a secret key, run:
 
 ```bash
-python manage.py test identity      # 199 unit/integration tests
-python scripts/security_demo.py     # 38-check live attack harness
-python -m ruff check .              # lint
-python manage.py check --deploy     # production configuration review
-pip-audit -r requirements/prod.txt  # dependency advisories
+python -c "import secrets; print(secrets.token_urlsafe(50))"
 ```
 
-The harness drives the full lifecycle against a throwaway database and asserts
-each control holds, exiting `0` when every check passes, `1` on a failed check and
-`2` when it could not complete. Both test commands use the same scratch database,
-so run them sequentially. The suite deliberately covers the failures that only
-appear under concurrency — several simultaneous refreshes of one token, and a
-registration that loses a uniqueness race — which a sequential test never shows.
+Open http://localhost:8000/api/health/ — if you see `"database":"ok"`, it's running.
+
+## Try it
+
+**Bash / macOS / Linux**
+
+```bash
+# Register
+curl -X POST http://localhost:8000/api/auth/register/ -H "Content-Type: application/json" \
+  -d '{"username":"alice","email":"alice@example.com","password":"Xq7!vartan-Spindle42","password_confirm":"Xq7!vartan-Spindle42"}'
+
+# Log in (returns access_token and refresh_token)
+curl -X POST http://localhost:8000/api/auth/login/ -H "Content-Type: application/json" \
+  -d '{"identifier":"alice","password":"Xq7!vartan-Spindle42"}'
+
+# Who am I?
+curl http://localhost:8000/api/auth/me/ -H "Authorization: Bearer <access_token>"
+```
+
+**Windows PowerShell**
+
+```powershell
+$B = 'http://localhost:8000'
+$P = 'Xq7!vartan-Spindle42'
+
+Invoke-RestMethod "$B/api/auth/register/" -Method Post -ContentType 'application/json' `
+  -Body (@{ username='alice'; email='alice@example.com'; password=$P; password_confirm=$P } | ConvertTo-Json)
+
+$login = Invoke-RestMethod "$B/api/auth/login/" -Method Post -ContentType 'application/json' `
+  -Body (@{ identifier='alice'; password=$P } | ConvertTo-Json)
+
+Invoke-RestMethod "$B/api/auth/me/" -Headers @{ Authorization = "Bearer $($login.tokens.access_token)" }
+```
+
+## API endpoints
+
+| Method | Path | What it does |
+| ------ | ---- | ------------ |
+| POST | `/api/auth/register/` | Create an account |
+| POST | `/api/auth/login/` | Log in, get tokens |
+| POST | `/api/auth/refresh/` | Get a new access token using the refresh token |
+| POST | `/api/auth/logout/` | Log out (one session, or all with `"all_sessions": true`) |
+| POST | `/api/auth/password/change/` | Change password (logs out everywhere) |
+| POST | `/api/auth/introspect/` | Check if a token is still valid |
+| GET | `/api/auth/me/` | Current user's info |
+| GET | `/.well-known/jwks.json` | Public key for verifying tokens |
+| GET | `/.well-known/openid-configuration` | Discovery info |
+| GET | `/api/health/` | Health check |
+
+## Running tests
+
+```bash
+python manage.py test identity     # unit and integration tests
+python scripts/security_demo.py    # simulates real attacks and checks they fail
+python -m ruff check .             # lint
+```
+
+Run the two test commands one at a time — they share a temporary database.
+
+Shortcuts for these and other tasks are in the `Makefile` (run `make help`).
+
+## Configuration
+
+All settings live in `.env`. `.env.example` is set up for local development and
+shows the value to use in production where it differs.
+
+For production, run `python manage.py check --deploy` — it warns you about
+anything that's not set up safely (for example, use Redis for `CACHE_URL` when
+running several workers).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Security reporting: [SECURITY.md](SECURITY.md).
+MIT — see [LICENSE](LICENSE). To report a security issue, see [SECURITY.md](SECURITY.md).
